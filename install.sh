@@ -101,6 +101,7 @@ DEFAULT_RETENTION_COUNT="100"
 DEFAULT_COMPRESSION_LEVEL="6"
 DEFAULT_TRANSFER_MODE="mirror"
 LOCK_FILE="\$BACKUP_ROOT/.backup.lock"
+LOCK_WAIT_SECONDS="86400"
 EOF
 fi
 cat > "$CONFIG_DIR/install.conf" <<EOF
@@ -121,6 +122,22 @@ Type=oneshot
 User=$run_user
 Environment=BACKUP_CONFIG=$CONFIG_DIR/backup.conf
 ExecStart=$INSTALL_DIR/backup.sh
+NoNewPrivileges=true
+PrivateTmp=true
+EOF
+
+cat > /etc/systemd/system/server-archive-backup@.service <<EOF
+[Unit]
+Description=Archive remote server backup job %i
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=$backup_root
+
+[Service]
+Type=oneshot
+User=$run_user
+Environment=BACKUP_CONFIG=$CONFIG_DIR/backup.conf
+ExecStart=$INSTALL_DIR/backup.sh --job %i
 NoNewPrivileges=true
 PrivateTmp=true
 EOF

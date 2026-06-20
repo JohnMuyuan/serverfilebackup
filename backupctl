@@ -258,10 +258,47 @@ run_one() {
 }
 
 configure_timer() {
-  local frequency time weekday month_day on_calendar description
-  local timer_file="/etc/systemd/system/$TIMER_NAME"
+  local scope job_name job_file frequency time weekday month_day on_calendar description
+  local target_timer target_service timer_file unit_line=""
   local -a weekdays=(Mon Tue Wed Thu Fri Sat Sun)
   local -a weekday_labels=(一 二 三 四 五 六 日)
+
+  say ""
+  say "1. 只设置一个备份任务（推荐，可让不同任务使用不同周期）"
+  say "2. 设置全部任务的统一周期"
+  scope="$(prompt '请选择定时范围' '1')"
+  case "$scope" in
+    1)
+      list_jobs
+      job_name="$(prompt '输入要设置周期的任务名称')"
+      job_file="$(job_file_by_name "$job_name")"
+      [[ -n "$job_file" ]] || { say "没有找到任务：$job_name"; return 0; }
+      target_timer="server-archive-backup@${job_name}.timer"
+      target_service="server-archive-backup@${job_name}.service"
+      timer_file="/etc/systemd/system/$target_timer"
+      unit_line="Unit=$target_service"
+      if systemctl is-enabled --quiet "$TIMER_NAME" 2>/dev/null; then
+        if confirm "全局定时器会造成重复备份，是否现在禁用它？" Y; then
+          systemctl disable --now "$TIMER_NAME"
+        else
+          say "已取消设置，避免任务被重复执行。"
+          return 0
+        fi
+      fi
+      ;;
+    2)
+      target_timer="$TIMER_NAME"
+      target_service="$SERVICE_NAME"
+      timer_file="/etc/systemd/system/$target_timer"
+      unit_line="Unit=$target_service"
+      say "注意：如已配置单任务定时器，全局周期可能造成重复备份。"
+      confirm "确定要为全部任务设置统一周期？" || return 0
+      ;;
+    *)
+      say "无效的范围选项"
+      return 0
+      ;;
+  esac
 
   say ""
   say "1. 每天一次"
@@ -318,14 +355,16 @@ Description=Run server archive backup on schedule
 OnCalendar=$on_calendar
 Persistent=true
 RandomizedDelaySec=5m
+$unit_line
 
 [Install]
 WantedBy=timers.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$TIMER_NAME"
+  systemctl enable "$target_timer"
+  systemctl restart "$target_timer"
   say "定时备份已启用：$description 运行（最多随机延迟 5 分钟）"
-  systemctl list-timers "$TIMER_NAME" --no-pager || true
+  systemctl list-timers "$target_timer" --no-pager || true
 }
 
 remove_job() {
@@ -335,15 +374,18 @@ remove_job() {
   file="$(job_file_by_name "$name")"
   [[ -n "$file" ]] || die "没有找到任务：$name"
   if confirm "仅删除任务配置，不删除已有归档。确定吗？"; then
+    systemctl disable --now "server-archive-backup@${name}.timer" >/dev/null 2>&1 || true
+    rm -f -- "/etc/systemd/system/server-archive-backup@${name}.timer"
     rm -f -- "$file"
+    systemctl daemon-reload
     say "任务已删除；历史归档仍然保留。"
   fi
 }
 
 show_status() {
-  systemctl status "$TIMER_NAME" --no-pager || true
+  systemctl list-timers 'server-archive-backup*.timer' --all --no-pager || true
   say ""
-  journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+  journalctl -u "$SERVICE_NAME" -u 'server-archive-backup@*.service' -n 50 --no-pager || true
 }
 
 menu() {
@@ -358,7 +400,7 @@ menu() {
     say "2. 查看已有任务"
     say "3. 立即运行一个任务"
     say "4. 立即运行全部任务"
-    say "5. 设置自动备份周期（日/周/月/自定义）"
+    say "5. 为任务设置独立备份周期（日/周/月/自定义）"
     say "6. 查看定时器状态和最近日志"
     say "7. 删除任务（保留归档）"
     say "0. 退出"
