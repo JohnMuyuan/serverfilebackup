@@ -1,0 +1,11 @@
+backup.conf
+!tests/fixtures/backup.conf
+backup.legacy.conf
+jobs.d/*.conf
+!jobs.d/*.conf.example
+archive/
+*.log
+*.part
+.ssh-password
+.agents/
+.codex/

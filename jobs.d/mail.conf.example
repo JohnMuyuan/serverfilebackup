@@ -1,0 +1,13 @@
+JOB_NAME="mail-server"
+REMOTE_HOST="mail.example.com"
+REMOTE_USER="backup"
+SSH_KEY="$HOME/.ssh/backup_ed25519"
+
+SOURCE_PATHS=(
+  "/var/vmail"
+  "/etc/postfix"
+  "/etc/dovecot"
+)
+
+EXCLUDE_PATTERNS=("*.lock" "*.tmp")
+RETENTION_COUNT="90"
