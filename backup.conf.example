@@ -15,6 +15,9 @@ DEFAULT_COMPRESSION_LEVEL="6"
 # mirror 使用 rsync 断点续传并在本地归档；stream 是旧版远端压缩流。
 DEFAULT_TRANSFER_MODE="mirror"
 
+# 默认保持单连接；跨地区任务可在任务配置中设置 PARALLEL_TRANSFERS=4。
+DEFAULT_PARALLEL_TRANSFERS="1"
+
 # 防止 cron/systemd 重复启动多个备份进程。
 LOCK_FILE="$BACKUP_ROOT/.backup.lock"
 
