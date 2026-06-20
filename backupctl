@@ -111,6 +111,50 @@ ensure_ssh_key() {
   say "密钥已创建：$key"
 }
 
+ensure_remote_rsync() {
+  local host="$1" user="$2" port="$3" key="$4" install_command
+  local -a ssh_command=(ssh -p "$port" -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+
+  if as_run_user "${ssh_command[@]}" "$user@$host" 'command -v rsync >/dev/null'; then
+    say "远端 rsync 已安装。"
+    return 0
+  fi
+
+  say "远端服务器尚未安装 rsync，断点续传需要它。"
+  if ! confirm "是否现在自动在远端安装 rsync？" Y; then
+    say "已跳过安装；任务已保存，但运行前必须先安装远端 rsync。"
+    return 1
+  fi
+
+  install_command='set -Eeuo pipefail
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@";
+  elif command -v sudo >/dev/null; then sudo "$@";
+  else echo "当前用户没有 root 或 sudo 权限，无法自动安装 rsync" >&2; exit 1; fi
+}
+if command -v apt-get >/dev/null; then
+  run_root apt-get update
+  run_root apt-get install -y rsync
+elif command -v dnf >/dev/null; then
+  run_root dnf install -y rsync
+elif command -v yum >/dev/null; then
+  run_root yum install -y rsync
+else
+  echo "不支持远端包管理器，请手动安装 rsync" >&2
+  exit 1
+fi'
+
+  if ! as_run_user ssh -tt -p "$port" -i "$key" -o StrictHostKeyChecking=accept-new \
+    "$user@$host" "$install_command" < /dev/tty > /dev/tty; then
+    say "远端 rsync 自动安装失败，请检查上方错误信息。"
+    return 1
+  fi
+
+  as_run_user "${ssh_command[@]}" "$user@$host" 'command -v rsync >/dev/null' \
+    || { say "安装完成后仍未找到远端 rsync。"; return 1; }
+  say "远端 rsync 安装完成。"
+}
+
 add_job() {
   local name host user port key retention compression transfer path pattern pre post file existing remote_dependencies
   local user_home
@@ -188,6 +232,9 @@ add_job() {
 
   if ensure_ssh_key "$key" && confirm "是否把公钥复制到远端服务器？（需要输入一次远端密码）" Y; then
     as_run_user ssh-copy-id -p "$port" -i "$key.pub" "$user@$host" < /dev/tty > /dev/tty
+  fi
+  if [[ "$transfer" == "mirror" ]] && ! ensure_remote_rsync "$host" "$user" "$port" "$key"; then
+    return 0
   fi
   if confirm "是否立即测试 SSH 和执行第一次备份？" Y; then
     remote_dependencies="bash tar gzip"
