@@ -292,6 +292,13 @@ run_job() {
   remote_command="$(build_remote_archive_command)"
   staging_root="${STAGING_DIR:-$BACKUP_ROOT/.staging/$JOB_NAME}"
 
+  cleanup_partial_archive() {
+    rm -f -- "$partial_file"
+  }
+  trap cleanup_partial_archive EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
   rm -f -- "$partial_file"
   run_remote_hook "备份前" "$REMOTE_PRE_COMMAND"
 
@@ -328,6 +335,7 @@ run_job() {
 
   apply_retention
   (( post_status == 0 )) || fail "$JOB_NAME: 归档已保存，但远端备份后命令失败（状态码 $post_status）"
+  trap - EXIT INT TERM
 }
 
 usage() {

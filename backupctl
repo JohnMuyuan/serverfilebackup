@@ -257,10 +257,24 @@ list_jobs() {
 }
 
 run_one() {
-  local name
+  local name file unit
   list_jobs
   name="$(prompt '输入要运行的任务名称')"
-  [[ -n "$name" ]] && run_backup --job "$name"
+  [[ -n "$name" ]] || return 0
+  file="$(job_file_by_name "$name")"
+  [[ -n "$file" ]] || { say "没有找到任务：$name"; return 0; }
+  unit="server-archive-backup@${name}.service"
+  systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+  systemctl start --no-block "$unit"
+  say "任务已在后台启动：$name"
+  say "可从菜单 6 查看实时进度或取消任务。"
+}
+
+run_all_background() {
+  systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl start --no-block "$SERVICE_NAME"
+  say "全部任务已在后台启动。"
+  say "可从菜单 6 查看实时进度或取消任务。"
 }
 
 configure_timer() {
@@ -394,6 +408,64 @@ show_status() {
   journalctl -u "$SERVICE_NAME" -u 'server-archive-backup@*.service' -n 50 --no-pager || true
 }
 
+service_unit_for_name() {
+  local name="$1"
+  if [[ "$name" == "all" ]]; then
+    printf '%s' "$SERVICE_NAME"
+    return 0
+  fi
+  [[ -n "$(job_file_by_name "$name")" ]] || return 1
+  printf 'server-archive-backup@%s.service' "$name"
+}
+
+background_manager() {
+  local action name unit
+  while true; do
+    say ""
+    say "当前运行中或失败的备份服务："
+    systemctl list-units 'server-archive-backup*.service' --type=service \
+      --state=activating,active,failed --all --no-pager || true
+    say ""
+    say "1. 实时查看一个任务的进度"
+    say "2. 取消一个后台任务"
+    say "3. 查看一个任务最近 100 行日志"
+    say "4. 查看所有定时器和下次运行时间"
+    say "0. 返回主菜单"
+    action="$(prompt '请选择')"
+    [[ "$action" == "0" ]] && return 0
+    if [[ "$action" == "4" ]]; then
+      systemctl list-timers 'server-archive-backup*.timer' --all --no-pager || true
+      pause
+      continue
+    fi
+
+    name="$(prompt '输入任务名称；全部任务服务请输入 all')"
+    if ! unit="$(service_unit_for_name "$name")"; then
+      say "没有找到任务：$name"
+      pause
+      continue
+    fi
+
+    case "$action" in
+      1)
+        say "正在跟踪 $name；按 Ctrl+C 仅退出日志查看，不会停止备份。"
+        journalctl -u "$unit" -n 30 -f || true
+        ;;
+      2)
+        if confirm "确定停止后台任务 $name？未完成文件会保留以便下次续传"; then
+          systemctl stop "$unit"
+          say "任务已停止：$name"
+        fi
+        ;;
+      3)
+        journalctl -u "$unit" -n 100 --no-pager || true
+        ;;
+      *) say "无效选项" ;;
+    esac
+    pause
+  done
+}
+
 menu() {
   require_root
   load_install_config
@@ -404,10 +476,10 @@ menu() {
     say "========================================"
     say "1. 添加或修改备份任务"
     say "2. 查看已有任务"
-    say "3. 立即运行一个任务"
-    say "4. 立即运行全部任务"
+    say "3. 后台立即运行一个任务"
+    say "4. 后台立即运行全部任务"
     say "5. 为任务设置独立备份周期（日/周/月/自定义）"
-    say "6. 查看定时器状态和最近日志"
+    say "6. 管理后台备份（进度/日志/取消/定时器）"
     say "7. 删除任务（保留归档）"
     say "0. 退出"
     say ""
@@ -415,9 +487,9 @@ menu() {
       1) add_job; pause ;;
       2) list_jobs; pause ;;
       3) run_one; pause ;;
-      4) run_backup; pause ;;
+      4) run_all_background; pause ;;
       5) configure_timer; pause ;;
-      6) show_status; pause ;;
+      6) background_manager ;;
       7) remove_job; pause ;;
       0) return 0 ;;
       *) say "无效选项"; sleep 1 ;;
