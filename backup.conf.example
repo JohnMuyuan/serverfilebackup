@@ -17,3 +17,6 @@ DEFAULT_TRANSFER_MODE="mirror"
 
 # 防止 cron/systemd 重复启动多个备份进程。
 LOCK_FILE="$BACKUP_ROOT/.backup.lock"
+
+# 多个独立任务撞期时最多等待一天，避免其中一个直接失败。
+LOCK_WAIT_SECONDS="86400"

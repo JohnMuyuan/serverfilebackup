@@ -32,6 +32,8 @@ load_global_config() {
   DEFAULT_COMPRESSION_LEVEL="${DEFAULT_COMPRESSION_LEVEL:-6}"
   DEFAULT_TRANSFER_MODE="${DEFAULT_TRANSFER_MODE:-mirror}"
   LOCK_FILE="${LOCK_FILE:-$BACKUP_ROOT/.backup.lock}"
+  LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-86400}"
+  [[ "$LOCK_WAIT_SECONDS" =~ ^[0-9]+$ ]] || fail "LOCK_WAIT_SECONDS 必须是非负整数"
 }
 
 reset_job_config() {
@@ -308,8 +310,15 @@ main() {
   done
 
   mkdir -p -- "$BACKUP_ROOT"
-  exec 9>"$LOCK_FILE"
-  flock -n 9 || fail "已有备份任务正在运行: $LOCK_FILE"
+  if (( list_only == 0 )); then
+    exec 9>"$LOCK_FILE"
+    if (( LOCK_WAIT_SECONDS == 0 )); then
+      flock -n 9 || fail "已有备份任务正在运行: $LOCK_FILE"
+    else
+      flock -w "$LOCK_WAIT_SECONDS" 9 \
+        || fail "等待其他备份任务完成超时: $LOCK_FILE"
+    fi
+  fi
 
   local -a configs=()
   shopt -s nullglob
