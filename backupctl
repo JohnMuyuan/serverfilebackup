@@ -156,7 +156,7 @@ fi'
 }
 
 add_job() {
-  local name host user port key retention compression transfer path pattern pre post file existing remote_dependencies
+  local name host user port key retention compression transfer parallel path pattern pre post file existing remote_dependencies
   local user_home
   local -a paths=() excludes=()
 
@@ -202,6 +202,11 @@ add_job() {
   if ! confirm "是否启用断点续传和后续增量同步？" Y; then
     transfer="stream"
   fi
+  parallel="1"
+  if [[ "$transfer" == "mirror" ]]; then
+    parallel="$(prompt '并行下载连接数 1-16（跨地区推荐 4）' '4')"
+    [[ "$parallel" =~ ^([1-9]|1[0-6])$ ]] || die "并行连接数必须是 1-16"
+  fi
 
   pre=""; post=""
   if confirm "是否配置数据库导出等高级前置/清理命令？"; then
@@ -222,6 +227,7 @@ add_job() {
     write_scalar RETENTION_COUNT "$retention"
     write_scalar COMPRESSION_LEVEL "$compression"
     write_scalar TRANSFER_MODE "$transfer"
+    write_scalar PARALLEL_TRANSFERS "$parallel"
     write_scalar REMOTE_PRE_COMMAND "$pre"
     write_scalar REMOTE_POST_COMMAND "$post"
   } > "$file.tmp"

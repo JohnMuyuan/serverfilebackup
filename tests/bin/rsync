@@ -5,6 +5,10 @@ set -Eeuo pipefail
 source_arg="${@: -2:1}"
 destination="${@: -1}"
 source_path="${source_arg#*:}"
+files_from=""
+for argument in "$@"; do
+  [[ "$argument" == --files-from=* ]] && files_from="${argument#--files-from=}"
+done
 [[ "$destination" == "$TEST_ROOT/"* ]] || { echo "unsafe test destination" >&2; exit 2; }
 
 mkdir -p -- "$destination"
@@ -15,7 +19,15 @@ if [[ -f "$TEST_ROOT/fail-rsync-once" ]]; then
   exit 12
 fi
 
-if [[ "$source_path" == */ ]]; then
+if [[ -n "$files_from" ]]; then
+  printf '%s\n' "$$" >> "$TEST_ROOT/rsync-workers.log"
+  source_path="${source_path%/}"
+  while IFS= read -r -d '' relative; do
+    relative="${relative#./}"
+    mkdir -p -- "$destination/$(dirname -- "$relative")"
+    cp -a -- "$source_path/$relative" "$destination/$relative"
+  done < "$files_from"
+elif [[ "$source_path" == */ ]]; then
   cp -a -- "$source_path". "$destination/"
 else
   cp -a -- "$source_path" "$destination"

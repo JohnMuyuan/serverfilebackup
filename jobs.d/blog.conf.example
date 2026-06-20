@@ -21,3 +21,4 @@ REMOTE_POST_COMMAND='rm -f /tmp/my-blog-database.sql'
 
 RETENTION_COUNT="60"
 TRANSFER_MODE="mirror"
+PARALLEL_TRANSFERS="4"

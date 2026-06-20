@@ -42,4 +42,14 @@ fi
 [[ "$(find "$TEST_ROOT/archive/mirror" -name '*.tar.gz' | wc -l)" -eq 1 ]]
 gzip -t "$(find "$TEST_ROOT/archive/mirror" -name '*.tar.gz' | head -n 1)"
 
+# Parallel mirror mode partitions one directory across multiple rsync workers.
+rm -f -- "$TEST_ROOT/rsync-workers.log"
+for number in 1 2 3 4 5 6 7 8; do
+  printf 'parallel-%s\n' "$number" > "$TEST_ROOT/source/parallel-$number.txt"
+done
+"$REPO_ROOT/backup.sh" --job parallel
+[[ "$(sort -u "$TEST_ROOT/rsync-workers.log" | wc -l)" -eq 4 ]]
+[[ "$(find "$TEST_ROOT/archive/.staging/parallel" -name 'parallel-*.txt' | wc -l)" -eq 8 ]]
+gzip -t "$(find "$TEST_ROOT/archive/parallel" -name '*.tar.gz' | head -n 1)"
+
 printf 'integration test: OK\n'

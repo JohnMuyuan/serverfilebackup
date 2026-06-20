@@ -31,6 +31,7 @@ load_global_config() {
   DEFAULT_RETENTION_COUNT="${DEFAULT_RETENTION_COUNT:-0}"
   DEFAULT_COMPRESSION_LEVEL="${DEFAULT_COMPRESSION_LEVEL:-6}"
   DEFAULT_TRANSFER_MODE="${DEFAULT_TRANSFER_MODE:-mirror}"
+  DEFAULT_PARALLEL_TRANSFERS="${DEFAULT_PARALLEL_TRANSFERS:-1}"
   LOCK_FILE="${LOCK_FILE:-$BACKUP_ROOT/.backup.lock}"
   LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-86400}"
   [[ "$LOCK_WAIT_SECONDS" =~ ^[0-9]+$ ]] || fail "LOCK_WAIT_SECONDS 必须是非负整数"
@@ -53,6 +54,7 @@ reset_job_config() {
   RETENTION_COUNT="$DEFAULT_RETENTION_COUNT"
   COMPRESSION_LEVEL="$DEFAULT_COMPRESSION_LEVEL"
   TRANSFER_MODE="$DEFAULT_TRANSFER_MODE"
+  PARALLEL_TRANSFERS="$DEFAULT_PARALLEL_TRANSFERS"
 }
 
 load_job_config() {
@@ -70,6 +72,8 @@ load_job_config() {
   [[ "$COMPRESSION_LEVEL" =~ ^[1-9]$ ]] || fail "$config_file: COMPRESSION_LEVEL 必须是 1 到 9"
   [[ "$TRANSFER_MODE" == "mirror" || "$TRANSFER_MODE" == "stream" ]] \
     || fail "$config_file: TRANSFER_MODE 必须是 mirror 或 stream"
+  [[ "$PARALLEL_TRANSFERS" =~ ^([1-9]|1[0-6])$ ]] \
+    || fail "$config_file: PARALLEL_TRANSFERS 必须是 1 到 16"
 
   local path
   for path in "${SOURCE_PATHS[@]}"; do
@@ -137,6 +141,49 @@ build_rsync_ssh_command() {
   printf '%s' "${output% }"
 }
 
+sync_directory_parallel() {
+  local path="$1" target="$2" args_name="$3"
+  local -n base_args="$args_name"
+  local state_dir="$BACKUP_ROOT/.state/$JOB_NAME" manifest chunk file
+  local index=0 worker failed=0
+  local -a pids=()
+
+  mkdir -p -- "$state_dir" "$target"
+  manifest="$state_dir/files.manifest"
+  rm -f -- "$state_dir"/files.chunk.*
+
+  log "$JOB_NAME: 获取远端文件清单并拆分为 $PARALLEL_TRANSFERS 个传输队列"
+  "${SSH_PREFIX[@]}" ssh "${SSH_ARGS[@]}" "$SSH_TARGET" \
+    "cd -- $(shell_quote "$path") && find . \( -type f -o -type l \) -print0" \
+    > "$manifest.tmp" || return $?
+  mv -f -- "$manifest.tmp" "$manifest"
+
+  while IFS= read -r -d '' file; do
+    chunk="$state_dir/files.chunk.$((index % PARALLEL_TRANSFERS))"
+    printf '%s\0' "$file" >> "$chunk"
+    ((index += 1))
+  done < "$manifest"
+
+  for ((worker=0; worker<PARALLEL_TRANSFERS; worker++)); do
+    chunk="$state_dir/files.chunk.$worker"
+    [[ -s "$chunk" ]] || continue
+    log "$JOB_NAME: 启动并行传输 $((worker + 1))/$PARALLEL_TRANSFERS"
+    rsync "${base_args[@]}" --from0 --files-from="$chunk" --relative \
+      "$SSH_TARGET:$path/" "$target/" &
+    pids+=("$!")
+  done
+
+  for worker in "${pids[@]}"; do
+    wait "$worker" || failed=1
+  done
+  (( failed == 0 )) || return 12
+
+  log "$JOB_NAME: 并行传输完成，正在核对目录和远端删除项"
+  rsync "${base_args[@]}" --delete --delete-excluded --ignore-existing \
+    "$SSH_TARGET:$path/" "$target/" || return $?
+  rm -f -- "$manifest" "$state_dir"/files.chunk.*
+}
+
 sync_remote_mirror() {
   require_command rsync
 
@@ -153,8 +200,6 @@ sync_remote_mirror() {
     --protect-args
     --partial
     --partial-dir=.rsync-partial
-    --delete
-    --delete-excluded
     --info=stats2,progress2
     -e "$ssh_command"
   )
@@ -171,8 +216,14 @@ sync_remote_mirror() {
 
     if [[ "$remote_type" == "directory" ]]; then
       mkdir -p -- "$target"
-      log "$JOB_NAME: 断点续传目录 $path"
-      rsync "${rsync_args[@]}" "$SSH_TARGET:$path/" "$target/" || return $?
+      if (( PARALLEL_TRANSFERS > 1 )); then
+        log "$JOB_NAME: 使用 $PARALLEL_TRANSFERS 条 SSH 连接并行续传目录 $path"
+        sync_directory_parallel "$path" "$target" rsync_args || return $?
+      else
+        log "$JOB_NAME: 断点续传目录 $path"
+        rsync "${rsync_args[@]}" --delete --delete-excluded \
+          "$SSH_TARGET:$path/" "$target/" || return $?
+      fi
     else
       mkdir -p -- "$(dirname -- "$target")"
       log "$JOB_NAME: 断点续传文件 $path"
