@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/zhangsan/server-backup/main/install
 
 安装器会自动：
 
-1. 安装 SSH、tar、gzip 等依赖。
+1. 安装 SSH、rsync、tar、gzip 等依赖。
 2. 把程序安装到 `/opt/server-archive-backup`。
 3. 询问运行备份的 Linux 用户。
 4. 询问 2T 硬盘上的归档目录。
@@ -67,6 +67,7 @@ SSH 私钥路径：直接回车使用默认值
 排除规则：直接回车表示不排除
 最多保留：100
 压缩级别：6
+是否启用断点续传和后续增量同步：Y
 ```
 
 菜单可以自动创建 SSH 密钥，并询问是否把公钥复制到远端。选择“是”后输入一次远端 SSH 密码；以后自动备份便不再需要密码。最后选择立即测试和首次备份。
@@ -94,7 +95,8 @@ findmnt
 
 - 任意数量的服务器和任务，每个任务一份 `jobs.d/*.conf`。
 - 一个任务可归档多个绝对路径。
-- 远端流式压缩，本地不需要先下载散文件，远端也不会遗留归档包。
+- 默认用 rsync 把远端文件增量同步到 2T 备份盘的本地缓存，断线后可续传。
+- 同步完成后在备份机本地生成 `tar.gz`，远端不会遗留临时归档包。
 - 文件按 `任务名_UTC时间.tar.gz` 命名，例如 `my-blog_20260620T083000Z.tar.gz`。
 - 下载完成后执行 gzip 完整性检查并生成 SHA-256 校验文件。
 - 内容与历史归档完全相同时自动删除本次副本。
@@ -218,9 +220,14 @@ RETENTION_COUNT="100"
 - `BACKUP_SUBDIR`：可选的本地子目录；默认使用 `JOB_NAME`。
 - `RETENTION_COUNT`：保留最新多少份；`0` 表示不按数量清理。
 - `COMPRESSION_LEVEL`：gzip 压缩级别 1–9，默认 6。
+- `TRANSFER_MODE`：`mirror` 使用 rsync 断点续传和增量同步；`stream` 使用旧版远端压缩流。
 - `REMOTE_PRE_COMMAND`、`REMOTE_POST_COMMAND`：可选的远端前置和清理命令。
 
 配置文件是 Bash 文件，可以使用 `$HOME`，但请勿放入来源不可信的代码。真实配置和密钥不会被 Git 跟踪。
+
+`mirror` 模式会在 `$BACKUP_ROOT/.staging/任务名` 保留一份最新文件镜像。首次运行需要传输全部数据；中断后再次运行会继续未完成文件，之后通常只传输新增或变化的文件。镜像同步完成后仍会生成一份完整 `tar.gz` 归档。
+
+容量规划时需要计算“一份最新镜像 + 所有保留归档”。例如 26GB 且不易压缩的附件，保留 30 份可能占用约 806GB。建议按照硬盘空间设置合理的 `RETENTION_COUNT`。
 
 如因特殊环境必须使用 SSH 密码，可在任务中设置 `SSH_PASSWORD_FILE` 并在备份机安装 `sshpass`；密码文件应执行 `chmod 600`。SSH 密钥仍是首选。
 

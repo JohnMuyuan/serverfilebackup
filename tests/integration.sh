@@ -8,7 +8,7 @@ trap 'rm -rf -- "$TEST_ROOT"' EXIT
 
 export PATH="$REPO_ROOT/tests/bin:$PATH"
 export BACKUP_CONFIG="$REPO_ROOT/tests/fixtures/backup.conf"
-chmod +x "$REPO_ROOT/tests/bin/ssh" "$REPO_ROOT/tests/bin/flock"
+chmod +x "$REPO_ROOT/tests/bin/ssh" "$REPO_ROOT/tests/bin/flock" "$REPO_ROOT/tests/bin/rsync"
 mkdir -p "$TEST_ROOT/source"
 
 printf 'version-one\n' > "$TEST_ROOT/source/data.txt"
@@ -30,5 +30,16 @@ printf 'version-three\n' > "$TEST_ROOT/source/data.txt"
 [[ "$(find "$TEST_ROOT/archive/integration" -name '*.tar.gz' | wc -l)" -eq 2 ]]
 [[ "$(find "$TEST_ROOT/archive/integration" -name '*.sha256' | wc -l)" -eq 2 ]]
 ! tar -tzf "$(find "$TEST_ROOT/archive/integration" -name '*.tar.gz' | head -n 1)" | grep -q 'cache.tmp'
+
+# Mirror mode keeps partial rsync state after a simulated disconnect and succeeds on retry.
+touch "$TEST_ROOT/fail-rsync-once"
+if "$REPO_ROOT/backup.sh" --job mirror; then
+  echo "mirror mode should have reported the simulated disconnect" >&2
+  exit 1
+fi
+[[ -f "$TEST_ROOT/archive/.staging/mirror/${TEST_ROOT#/}/source/.rsync-partial/interrupted" ]]
+"$REPO_ROOT/backup.sh" --job mirror
+[[ "$(find "$TEST_ROOT/archive/mirror" -name '*.tar.gz' | wc -l)" -eq 1 ]]
+gzip -t "$(find "$TEST_ROOT/archive/mirror" -name '*.tar.gz' | head -n 1)"
 
 printf 'integration test: OK\n'
