@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Integration-test stand-in: execute the remote command in the local test shell.
+set -Eeuo pipefail
+remote_command="${!#}"
+bash -c "$remote_command"

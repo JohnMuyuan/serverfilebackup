@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SELF_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+APP_DIR="${SERVER_BACKUP_APP_DIR:-$(cd -- "$(dirname -- "$SELF_PATH")" && pwd)}"
+CONFIG_DIR="${SERVER_BACKUP_CONFIG_DIR:-/etc/server-archive-backup}"
+INSTALL_CONFIG="$CONFIG_DIR/install.conf"
+BACKUP_CONFIG="$CONFIG_DIR/backup.conf"
+BACKUP_SCRIPT="$APP_DIR/backup.sh"
+SERVICE_NAME="server-archive-backup.service"
+TIMER_NAME="server-archive-backup.timer"
+
+say() { printf '%s\n' "$*"; }
+die() { say "错误：$*" >&2; exit 1; }
+
+prompt() {
+  local message="$1" default="${2:-}" answer
+  if [[ -n "$default" ]]; then
+    printf '%s [%s]: ' "$message" "$default" > /dev/tty
+  else
+    printf '%s: ' "$message" > /dev/tty
+  fi
+  IFS= read -r answer < /dev/tty || true
+  printf '%s' "${answer:-$default}"
+}
+
+confirm() {
+  local message="$1" default="${2:-N}" answer suffix="y/N"
+  [[ "$default" =~ ^[Yy]$ ]] && suffix="Y/n"
+  printf '%s [%s]: ' "$message" "$suffix" > /dev/tty
+  IFS= read -r answer < /dev/tty || true
+  answer="${answer:-$default}"
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+pause() {
+  printf '\n按回车键继续...' > /dev/tty
+  IFS= read -r _ < /dev/tty || true
+}
+
+require_root() {
+  (( EUID == 0 )) || die "请使用 sudo backupctl 运行配置菜单"
+}
+
+load_install_config() {
+  [[ -f "$INSTALL_CONFIG" ]] || die "尚未完成安装：$INSTALL_CONFIG 不存在"
+  # shellcheck source=/dev/null
+  source "$INSTALL_CONFIG"
+  : "${RUN_USER:?install.conf 中缺少 RUN_USER}"
+  [[ -f "$BACKUP_CONFIG" ]] || die "找不到 $BACKUP_CONFIG"
+  [[ -x "$BACKUP_SCRIPT" ]] || die "找不到可执行备份脚本 $BACKUP_SCRIPT"
+}
+
+as_run_user() {
+  if [[ "$(id -un)" == "$RUN_USER" ]]; then
+    "$@"
+  else
+    runuser -u "$RUN_USER" -- "$@"
+  fi
+}
+
+run_backup() {
+  as_run_user env BACKUP_CONFIG="$BACKUP_CONFIG" "$BACKUP_SCRIPT" "$@"
+}
+
+write_scalar() {
+  local name="$1" value="$2"
+  printf '%s=' "$name"
+  printf '%q' "$value"
+  printf '\n'
+}
+
+write_array() {
+  local name="$1"; shift
+  local item
+  printf '%s=(\n' "$name"
+  for item in "$@"; do
+    printf '  '
+    printf '%q' "$item"
+    printf '\n'
+  done
+  printf ')\n'
+}
+
+job_file_by_name() {
+  local wanted="$1" file found=""
+  shopt -s nullglob
+  for file in "$CONFIG_DIR/jobs.d"/*.conf; do
+    JOB_NAME=""
+    # shellcheck source=/dev/null
+    source "$file"
+    if [[ "$JOB_NAME" == "$wanted" ]]; then
+      found="$file"
+      break
+    fi
+  done
+  shopt -u nullglob
+  printf '%s' "$found"
+}
+
+ensure_ssh_key() {
+  local key="$1" key_dir
+  [[ -f "$key" ]] && return 0
+  if ! confirm "SSH 密钥不存在，是否现在为 $RUN_USER 创建？" Y; then
+    return 1
+  fi
+  key_dir="$(dirname -- "$key")"
+  as_run_user mkdir -p -- "$key_dir"
+  as_run_user chmod 700 "$key_dir"
+  as_run_user ssh-keygen -q -t ed25519 -N '' -f "$key"
+  say "密钥已创建：$key"
+}
+
+add_job() {
+  local name host user port key retention compression path pattern pre post file existing
+  local user_home
+  local -a paths=() excludes=()
+
+  say ""
+  say "添加备份任务"
+  say "路径示例：/var/www/blog、/home/mc/backups、/var/vmail"
+  while true; do
+    name="$(prompt '任务名称（英文/数字/短横线）')"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && break
+    say "任务名称格式不正确。"
+  done
+  existing="$(job_file_by_name "$name")"
+  if [[ -n "$existing" ]] && ! confirm "任务已存在，是否覆盖？"; then return 0; fi
+
+  host="$(prompt '服务器 IP 或域名')"
+  [[ -n "$host" ]] || die "服务器地址不能为空"
+  user="$(prompt 'SSH 用户名' 'backup')"
+  port="$(prompt 'SSH 端口' '22')"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "SSH 端口格式错误"
+
+  user_home="$(getent passwd "$RUN_USER" | cut -d: -f6)"
+  key="$(prompt 'SSH 私钥路径' "$user_home/.ssh/server_backup_ed25519")"
+
+  while true; do
+    path="$(prompt '要备份的远端绝对路径（输入完毕直接回车）')"
+    [[ -z "$path" ]] && break
+    [[ "$path" == /* ]] || { say "必须是以 / 开头的绝对路径。"; continue; }
+    paths+=("$path")
+  done
+  (( ${#paths[@]} > 0 )) || die "至少需要一个备份路径"
+
+  while true; do
+    pattern="$(prompt '排除规则（可选，例如 */cache/*；输入完毕回车）')"
+    [[ -z "$pattern" ]] && break
+    excludes+=("$pattern")
+  done
+
+  retention="$(prompt '最多保留多少份（0 表示不限）' '100')"
+  [[ "$retention" =~ ^[0-9]+$ ]] || die "保留数量必须是非负整数"
+  compression="$(prompt '压缩级别 1-9' '6')"
+  [[ "$compression" =~ ^[1-9]$ ]] || die "压缩级别必须是 1-9"
+
+  pre=""; post=""
+  if confirm "是否配置数据库导出等高级前置/清理命令？"; then
+    pre="$(prompt '备份前远端命令（可留空）')"
+    post="$(prompt '备份后远端命令（可留空）')"
+  fi
+
+  file="$CONFIG_DIR/jobs.d/$name.conf"
+  umask 027
+  {
+    write_scalar JOB_NAME "$name"
+    write_scalar REMOTE_HOST "$host"
+    write_scalar REMOTE_USER "$user"
+    write_scalar REMOTE_PORT "$port"
+    write_scalar SSH_KEY "$key"
+    write_array SOURCE_PATHS "${paths[@]}"
+    write_array EXCLUDE_PATTERNS "${excludes[@]}"
+    write_scalar RETENTION_COUNT "$retention"
+    write_scalar COMPRESSION_LEVEL "$compression"
+    write_scalar REMOTE_PRE_COMMAND "$pre"
+    write_scalar REMOTE_POST_COMMAND "$post"
+  } > "$file.tmp"
+  mv -f -- "$file.tmp" "$file"
+  chown root:"$RUN_USER" "$file"
+  chmod 640 "$file"
+  say "任务已保存：$name"
+
+  if ensure_ssh_key "$key" && confirm "是否把公钥复制到远端服务器？（需要输入一次远端密码）" Y; then
+    as_run_user ssh-copy-id -p "$port" -i "$key.pub" "$user@$host" < /dev/tty > /dev/tty
+  fi
+  if confirm "是否立即测试 SSH 和执行第一次备份？" Y; then
+    as_run_user ssh -p "$port" -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "$user@$host" 'command -v bash tar gzip >/dev/null && echo SSH连接及远端依赖正常' < /dev/tty > /dev/tty
+    run_backup --job "$name"
+  fi
+}
+
+list_jobs() {
+  say ""
+  run_backup --list || true
+}
+
+run_one() {
+  local name
+  list_jobs
+  name="$(prompt '输入要运行的任务名称')"
+  [[ -n "$name" ]] && run_backup --job "$name"
+}
+
+configure_timer() {
+  local calendar timer_file="/etc/systemd/system/$TIMER_NAME"
+  calendar="$(prompt '每天运行时间（HH:MM，24小时制）' '03:15')"
+  [[ "$calendar" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "时间格式应为 HH:MM"
+  cat > "$timer_file" <<EOF
+[Unit]
+Description=Run server archive backup every day
+
+[Timer]
+OnCalendar=*-*-* ${calendar}:00
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "$TIMER_NAME"
+  say "定时备份已启用：每天约 $calendar 运行（最多随机延迟 5 分钟）"
+  systemctl list-timers "$TIMER_NAME" --no-pager || true
+}
+
+remove_job() {
+  local name file
+  list_jobs
+  name="$(prompt '输入要删除的任务名称')"
+  file="$(job_file_by_name "$name")"
+  [[ -n "$file" ]] || die "没有找到任务：$name"
+  if confirm "仅删除任务配置，不删除已有归档。确定吗？"; then
+    rm -f -- "$file"
+    say "任务已删除；历史归档仍然保留。"
+  fi
+}
+
+show_status() {
+  systemctl status "$TIMER_NAME" --no-pager || true
+  say ""
+  journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+}
+
+menu() {
+  require_root
+  load_install_config
+  while true; do
+    clear 2>/dev/null || true
+    say "========================================"
+    say "        服务器自动备份管理器"
+    say "========================================"
+    say "1. 添加或修改备份任务"
+    say "2. 查看已有任务"
+    say "3. 立即运行一个任务"
+    say "4. 立即运行全部任务"
+    say "5. 设置每日自动备份时间"
+    say "6. 查看定时器状态和最近日志"
+    say "7. 删除任务（保留归档）"
+    say "0. 退出"
+    say ""
+    case "$(prompt '请选择')" in
+      1) add_job; pause ;;
+      2) list_jobs; pause ;;
+      3) run_one; pause ;;
+      4) run_backup; pause ;;
+      5) configure_timer; pause ;;
+      6) show_status; pause ;;
+      7) remove_job; pause ;;
+      0) return 0 ;;
+      *) say "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  menu) menu ;;
+  add) require_root; load_install_config; add_job ;;
+  list) require_root; load_install_config; list_jobs ;;
+  run) require_root; load_install_config; shift; run_backup "$@" ;;
+  schedule) require_root; load_install_config; configure_timer ;;
+  status) require_root; load_install_config; show_status ;;
+  *) die "用法：backupctl [menu|add|list|run|schedule|status]" ;;
+esac

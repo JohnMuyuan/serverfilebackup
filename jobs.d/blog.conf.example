@@ -1,0 +1,22 @@
+JOB_NAME="my-blog"
+REMOTE_HOST="blog.example.com"
+REMOTE_USER="backup"
+SSH_KEY="$HOME/.ssh/backup_ed25519"
+
+# 可同时把站点文件、配置和数据库导出文件放入一个 tar.gz。
+SOURCE_PATHS=(
+  "/var/www/my-blog"
+  "/tmp/my-blog-database.sql"
+)
+
+EXCLUDE_PATTERNS=(
+  "*/cache/*"
+  "*/node_modules/*"
+)
+
+# 示例：打包前导出数据库，完成后删除远端临时导出。
+# 请使用权限受限的数据库账号；更推荐在远端使用受保护的凭据文件。
+REMOTE_PRE_COMMAND='mysqldump --defaults-extra-file=$HOME/.my-backup.cnf my_blog > /tmp/my-blog-database.sql'
+REMOTE_POST_COMMAND='rm -f /tmp/my-blog-database.sql'
+
+RETENTION_COUNT="60"

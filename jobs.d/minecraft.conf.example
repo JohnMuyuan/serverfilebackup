@@ -1,0 +1,17 @@
+# 复制为 minecraft.conf 后启用。配置文件本身是 Bash 语法。
+JOB_NAME="minecraft-main"
+REMOTE_HOST="mc.example.com"
+REMOTE_USER="mc"
+REMOTE_PORT="22"
+SSH_KEY="$HOME/.ssh/backup_ed25519"
+
+SOURCE_PATHS=(
+  "/home/mc/backups"
+)
+
+EXCLUDE_PATTERNS=(
+  "*.tmp"
+)
+
+# 0 表示永久保留；也可以覆盖全局默认值。
+RETENTION_COUNT="100"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Git Bash lacks flock; locking itself is exercised on the target Linux host.
+exit 0

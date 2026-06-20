@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+TEST_ROOT="$(mktemp -d)"
+export REPO_ROOT TEST_ROOT
+trap 'rm -rf -- "$TEST_ROOT"' EXIT
+
+export PATH="$REPO_ROOT/tests/bin:$PATH"
+export BACKUP_CONFIG="$REPO_ROOT/tests/fixtures/backup.conf"
+chmod +x "$REPO_ROOT/tests/bin/ssh" "$REPO_ROOT/tests/bin/flock"
+mkdir -p "$TEST_ROOT/source"
+
+printf 'version-one\n' > "$TEST_ROOT/source/data.txt"
+printf 'ignored\n' > "$TEST_ROOT/source/cache.tmp"
+"$REPO_ROOT/backup.sh" --job integration
+
+sleep 1
+"$REPO_ROOT/backup.sh" --job integration
+[[ "$(find "$TEST_ROOT/archive/integration" -name '*.tar.gz' | wc -l)" -eq 1 ]]
+
+sleep 1
+printf 'version-two\n' > "$TEST_ROOT/source/data.txt"
+"$REPO_ROOT/backup.sh" --job integration
+
+sleep 1
+printf 'version-three\n' > "$TEST_ROOT/source/data.txt"
+"$REPO_ROOT/backup.sh" --job integration
+
+[[ "$(find "$TEST_ROOT/archive/integration" -name '*.tar.gz' | wc -l)" -eq 2 ]]
+[[ "$(find "$TEST_ROOT/archive/integration" -name '*.sha256' | wc -l)" -eq 2 ]]
+! tar -tzf "$(find "$TEST_ROOT/archive/integration" -name '*.tar.gz' | head -n 1)" | grep -q 'cache.tmp'
+
+printf 'integration test: OK\n'

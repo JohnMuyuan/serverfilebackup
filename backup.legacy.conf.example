@@ -1,0 +1,11 @@
+# 旧版 mc_backup_pull.sh 专用配置模板。
+REMOTE_USER="mc"
+REMOTE_HOST="example.com"
+REMOTE_PORT="22"
+SSH_KEY="$HOME/.ssh/mc_backup_ed25519"
+SSH_PASSWORD_FILE=""
+REMOTE_PATH="/home/mc/backups/"
+BACKUP_DIR=""
+RETENTION_COUNT="0"
+RSYNC_EXTRA_ARGS="--include '*.zip' --exclude '*'"
+AUTO_INSTALL_DEPS="1"

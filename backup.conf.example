@@ -1,0 +1,16 @@
+# 复制为 backup.conf。这是所有服务器任务共享的全局配置。
+
+# 2T 备份盘的挂载位置。建议使用绝对路径。
+BACKUP_ROOT="/mnt/backup-disk/server-archives"
+
+# 每个启用的 *.conf 文件代表一个备份任务。
+JOBS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/jobs.d"
+
+# 单个任务没有单独设置时使用的默认保留数量。0 表示不按数量清理。
+DEFAULT_RETENTION_COUNT="100"
+
+# gzip 压缩级别 1-9；6 通常是速度与体积的平衡点。
+DEFAULT_COMPRESSION_LEVEL="6"
+
+# 防止 cron/systemd 重复启动多个备份进程。
+LOCK_FILE="$BACKUP_ROOT/.backup.lock"
