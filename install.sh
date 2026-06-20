@@ -90,7 +90,7 @@ BACKUP_ROOT=$(printf '%q' "$backup_root")
 JOBS_DIR=$(printf '%q' "$CONFIG_DIR/jobs.d")
 DEFAULT_RETENTION_COUNT="100"
 DEFAULT_COMPRESSION_LEVEL="6"
-LOCK_FILE=\"\$BACKUP_ROOT/.backup.lock\"
+LOCK_FILE="\$BACKUP_ROOT/.backup.lock"
 EOF
 fi
 cat > "$CONFIG_DIR/install.conf" <<EOF
