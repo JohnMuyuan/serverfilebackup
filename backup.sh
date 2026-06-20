@@ -30,6 +30,7 @@ load_global_config() {
   JOBS_DIR="${JOBS_DIR:-$SCRIPT_DIR/jobs.d}"
   DEFAULT_RETENTION_COUNT="${DEFAULT_RETENTION_COUNT:-0}"
   DEFAULT_COMPRESSION_LEVEL="${DEFAULT_COMPRESSION_LEVEL:-6}"
+  DEFAULT_TRANSFER_MODE="${DEFAULT_TRANSFER_MODE:-mirror}"
   LOCK_FILE="${LOCK_FILE:-$BACKUP_ROOT/.backup.lock}"
 }
 
@@ -46,8 +47,10 @@ reset_job_config() {
   REMOTE_PRE_COMMAND=""
   REMOTE_POST_COMMAND=""
   BACKUP_SUBDIR=""
+  STAGING_DIR=""
   RETENTION_COUNT="$DEFAULT_RETENTION_COUNT"
   COMPRESSION_LEVEL="$DEFAULT_COMPRESSION_LEVEL"
+  TRANSFER_MODE="$DEFAULT_TRANSFER_MODE"
 }
 
 load_job_config() {
@@ -63,6 +66,8 @@ load_job_config() {
   [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]] || fail "$config_file: REMOTE_PORT 必须是端口号"
   [[ "$RETENTION_COUNT" =~ ^[0-9]+$ ]] || fail "$config_file: RETENTION_COUNT 必须是非负整数"
   [[ "$COMPRESSION_LEVEL" =~ ^[1-9]$ ]] || fail "$config_file: COMPRESSION_LEVEL 必须是 1 到 9"
+  [[ "$TRANSFER_MODE" == "mirror" || "$TRANSFER_MODE" == "stream" ]] \
+    || fail "$config_file: TRANSFER_MODE 必须是 mirror 或 stream"
 
   local path
   for path in "${SOURCE_PATHS[@]}"; do
@@ -121,6 +126,67 @@ build_remote_archive_command() {
   printf '%s' "$command"
 }
 
+build_rsync_ssh_command() {
+  local -a command=("${SSH_PREFIX[@]}" ssh "${SSH_ARGS[@]}")
+  local item output=""
+  for item in "${command[@]}"; do
+    output+="$(shell_quote "$item") "
+  done
+  printf '%s' "${output% }"
+}
+
+sync_remote_mirror() {
+  require_command rsync
+
+  local staging_root="$1" ssh_command path relative target pattern remote_type
+  local -a rsync_args
+  "${SSH_PREFIX[@]}" ssh "${SSH_ARGS[@]}" "$SSH_TARGET" "command -v rsync >/dev/null" \
+    || fail "$JOB_NAME: 远端缺少 rsync；请在远端安装 rsync 后重试"
+  ssh_command="$(build_rsync_ssh_command)"
+  mkdir -p -- "$staging_root"
+
+  rsync_args=(
+    -a
+    --numeric-ids
+    --protect-args
+    --partial
+    --partial-dir=.rsync-partial
+    --delete
+    --delete-excluded
+    --info=stats2,progress2
+    -e "$ssh_command"
+  )
+  for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+    rsync_args+=(--exclude "$pattern")
+  done
+
+  for path in "${SOURCE_PATHS[@]}"; do
+    relative="${path#/}"
+    target="$staging_root/$relative"
+    remote_type="$("${SSH_PREFIX[@]}" ssh "${SSH_ARGS[@]}" "$SSH_TARGET" \
+      "if test -d $(shell_quote "$path"); then printf directory; elif test -f $(shell_quote "$path"); then printf file; else exit 2; fi")" \
+      || fail "$JOB_NAME: 远端路径不存在或不可读取: $path"
+
+    if [[ "$remote_type" == "directory" ]]; then
+      mkdir -p -- "$target"
+      log "$JOB_NAME: 断点续传目录 $path"
+      rsync "${rsync_args[@]}" "$SSH_TARGET:$path/" "$target/" || return $?
+    else
+      mkdir -p -- "$(dirname -- "$target")"
+      log "$JOB_NAME: 断点续传文件 $path"
+      rsync "${rsync_args[@]}" "$SSH_TARGET:$path" "$target" || return $?
+    fi
+  done
+}
+
+archive_local_mirror() {
+  local staging_root="$1" output_file="$2"
+  log "$JOB_NAME: 增量同步完成，正在本地生成归档"
+  tar -C "$staging_root" --create --sort=name --format=posix \
+    --pax-option=delete=atime,delete=ctime --numeric-owner \
+    --exclude='.rsync-partial' -- . | gzip -n -"$COMPRESSION_LEVEL" > "$output_file"
+}
+
 find_duplicate() {
   local checksum="$1"
   local checksum_file saved_checksum saved_name
@@ -165,25 +231,34 @@ run_job() {
   JOB_DIR="$BACKUP_ROOT/${BACKUP_SUBDIR:-$JOB_NAME}"
   mkdir -p -- "$JOB_DIR"
 
-  local timestamp filename final_file partial_file remote_command checksum duplicate
+  local timestamp filename final_file partial_file remote_command checksum duplicate staging_root
   timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
   filename="${JOB_NAME}_${timestamp}.tar.gz"
   final_file="$JOB_DIR/$filename"
   partial_file="$final_file.part"
   remote_command="$(build_remote_archive_command)"
+  staging_root="${STAGING_DIR:-$BACKUP_ROOT/.staging/$JOB_NAME}"
 
   rm -f -- "$partial_file"
   run_remote_hook "备份前" "$REMOTE_PRE_COMMAND"
 
-  log "$JOB_NAME: 从 $SSH_TARGET 创建并下载归档"
   local archive_status=0 post_status=0
-  "${SSH_PREFIX[@]}" ssh "${SSH_ARGS[@]}" "$SSH_TARGET" \
-    "bash -c $(shell_quote "$remote_command")" > "$partial_file" || archive_status=$?
+  if [[ "$TRANSFER_MODE" == "mirror" ]]; then
+    log "$JOB_NAME: 从 $SSH_TARGET 增量同步到本地缓存（支持断点续传）"
+    sync_remote_mirror "$staging_root" || archive_status=$?
+    if (( archive_status == 0 )); then
+      archive_local_mirror "$staging_root" "$partial_file" || archive_status=$?
+    fi
+  else
+    log "$JOB_NAME: 从 $SSH_TARGET 创建并下载流式归档"
+    "${SSH_PREFIX[@]}" ssh "${SSH_ARGS[@]}" "$SSH_TARGET" \
+      "bash -c $(shell_quote "$remote_command")" > "$partial_file" || archive_status=$?
+  fi
   run_remote_hook "备份后" "$REMOTE_POST_COMMAND" || post_status=$?
 
   if (( archive_status != 0 )); then
     rm -f -- "$partial_file"
-    fail "$JOB_NAME: 远端打包或下载失败（状态码 $archive_status）"
+    fail "$JOB_NAME: 同步、打包或下载失败（状态码 $archive_status）；镜像模式下次会继续未完成文件"
   fi
   [[ -s "$partial_file" ]] || { rm -f -- "$partial_file"; fail "$JOB_NAME: 收到空归档"; }
   gzip -t "$partial_file" || { rm -f -- "$partial_file"; fail "$JOB_NAME: 归档完整性检查失败"; }

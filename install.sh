@@ -44,11 +44,11 @@ fi
 install_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates openssh-client gzip coreutils findutils util-linux tar
+    DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates openssh-client gzip coreutils findutils util-linux tar rsync
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl ca-certificates openssh-clients gzip coreutils findutils util-linux tar
+    dnf install -y curl ca-certificates openssh-clients gzip coreutils findutils util-linux tar rsync
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl ca-certificates openssh-clients gzip coreutils findutils util-linux tar
+    yum install -y curl ca-certificates openssh-clients gzip coreutils findutils util-linux tar rsync
   else
     die "暂不支持此包管理器，请先安装 curl、SSH 客户端、tar、gzip、coreutils、findutils、util-linux"
   fi
@@ -74,9 +74,18 @@ install -m 644 "$tmp_dir/source/README.md" "$INSTALL_DIR/README.md"
 ln -sfn "$INSTALL_DIR/backupctl" /usr/local/bin/backupctl
 
 default_user="${SUDO_USER:-root}"
+if [[ -f "$CONFIG_DIR/install.conf" ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_DIR/install.conf"
+  default_user="${RUN_USER:-$default_user}"
+fi
 run_user="$(prompt_tty '运行备份的 Linux 用户' "$default_user")"
 id "$run_user" >/dev/null 2>&1 || die "Linux 用户不存在：$run_user"
-backup_root="$(prompt_tty '2T 备份硬盘上的归档目录' '/mnt/backup-disk/server-archives')"
+default_backup_root="/mnt/backup-disk/server-archives"
+if [[ -f "$CONFIG_DIR/backup.conf" ]]; then
+  default_backup_root="$(bash -c 'source "$1"; printf "%s" "$BACKUP_ROOT"' _ "$CONFIG_DIR/backup.conf")"
+fi
+backup_root="$(prompt_tty '2T 备份硬盘上的归档目录' "$default_backup_root")"
 [[ "$backup_root" == /* ]] || die "归档目录必须是绝对路径"
 [[ "$backup_root" != *[[:space:]]* ]] || die "归档目录暂不支持空格"
 
@@ -90,6 +99,7 @@ BACKUP_ROOT=$(printf '%q' "$backup_root")
 JOBS_DIR=$(printf '%q' "$CONFIG_DIR/jobs.d")
 DEFAULT_RETENTION_COUNT="100"
 DEFAULT_COMPRESSION_LEVEL="6"
+DEFAULT_TRANSFER_MODE="mirror"
 LOCK_FILE="\$BACKUP_ROOT/.backup.lock"
 EOF
 fi

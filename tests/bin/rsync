@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Integration-test stand-in for the mirror-mode rsync call.
+set -Eeuo pipefail
+
+source_arg="${@: -2:1}"
+destination="${@: -1}"
+source_path="${source_arg#*:}"
+[[ "$destination" == "$TEST_ROOT/"* ]] || { echo "unsafe test destination" >&2; exit 2; }
+
+mkdir -p -- "$destination"
+if [[ -f "$TEST_ROOT/fail-rsync-once" ]]; then
+  rm -f -- "$TEST_ROOT/fail-rsync-once"
+  mkdir -p -- "$destination/.rsync-partial"
+  printf 'partial\n' > "$destination/.rsync-partial/interrupted"
+  exit 12
+fi
+
+if [[ "$source_path" == */ ]]; then
+  cp -a -- "$source_path". "$destination/"
+else
+  cp -a -- "$source_path" "$destination"
+fi

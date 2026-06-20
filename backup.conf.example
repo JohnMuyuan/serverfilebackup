@@ -12,5 +12,8 @@ DEFAULT_RETENTION_COUNT="100"
 # gzip 压缩级别 1-9；6 通常是速度与体积的平衡点。
 DEFAULT_COMPRESSION_LEVEL="6"
 
+# mirror 使用 rsync 断点续传并在本地归档；stream 是旧版远端压缩流。
+DEFAULT_TRANSFER_MODE="mirror"
+
 # 防止 cron/systemd 重复启动多个备份进程。
 LOCK_FILE="$BACKUP_ROOT/.backup.lock"
